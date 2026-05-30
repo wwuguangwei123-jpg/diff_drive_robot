@@ -3,7 +3,7 @@
     use_sim_time: true
     odom_frame: odom
     map_frame: map
-    base_frame: base_link
+    base_frame: base_footprint
     scan_topic: /scan
     mode: mapping
 
