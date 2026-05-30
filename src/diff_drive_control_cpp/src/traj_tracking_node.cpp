@@ -119,7 +119,7 @@ void TrajTrackingNode::odom_callback(const nav_msgs::msg::Odometry::SharedPtr ms
 }
 
 void TrajTrackingNode::scan_callback(const sensor_msgs::msg::LaserScan::SharedPtr msg) {
-    if (current_state_ == RobotState::REACHED_GOAL) {
+    if (current_state_ == RobotState::REACHED_GOAL || global_path_.empty()) {
         return;
     }
 
@@ -169,6 +169,12 @@ double TrajTrackingNode::get_min_range(
 void TrajTrackingNode::control_loop() {
     geometry_msgs::msg::Twist cmd_msg;
 
+    if (global_path_.empty()) {
+        last_linear_x_ = 0.0;
+        cmd_pub_->publish(cmd_msg);
+        return;
+    }
+
     if (current_state_ == RobotState::REACHED_GOAL) {
         last_linear_x_ = 0.0;
         cmd_pub_->publish(cmd_msg);
@@ -188,11 +194,6 @@ void TrajTrackingNode::control_loop() {
             cmd_msg.angular.z = (min_dist_left_ > min_dist_right_) ? turn_gain : -turn_gain;
         }
     } else if (current_state_ == RobotState::GO_TO_GOAL) {
-        if (global_path_.empty()) {
-            cmd_pub_->publish(cmd_msg);
-            return;
-        }
-
         publish_cte();
 
         const auto &goal = global_path_.back();
