@@ -8,6 +8,7 @@
     mode: mapping
 
     # Match the simulated lidar range in diff_drive_gazebo.urdf.xacro.
+    min_laser_range: 0.12
     max_laser_range: 8.0
 
     # Keep generous queues for Gazebo/RViz startup transients.
