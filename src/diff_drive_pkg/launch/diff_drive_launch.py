@@ -1,80 +1,97 @@
 import os
+
+import xacro
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch_ros.actions import Node, SetParameter
-import xacro
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
+
 
 def generate_launch_description():
-    pkg_name = 'diff_drive_pkg'
-    pkg_share = get_package_share_directory(pkg_name)
-    
+    pkg_share = get_package_share_directory('diff_drive_pkg')
+    gazebo_share = get_package_share_directory('gazebo_ros')
+
+    use_sim_time = LaunchConfiguration('use_sim_time')
+    use_rviz = LaunchConfiguration('rviz')
+    use_slam = LaunchConfiguration('slam')
+    world = LaunchConfiguration('world')
+
     xacro_file = os.path.join(pkg_share, 'urdf', 'diff_drive_gazebo.urdf.xacro')
-    doc = xacro.parse(open(xacro_file))
-    xacro.process_doc(doc)
-    robot_description = {'robot_description': doc.toxml()}
+    robot_description_xml = xacro.process_file(xacro_file).toxml()
 
-    # 全局强制时间同步
-    global_sim_time = SetParameter(name='use_sim_time', value=True)
-
-    gazebo = ExecuteProcess(
-        cmd=['gazebo', '--verbose', '-s', 'libgazebo_ros_factory.so', '-s', 'libgazebo_ros_init.so'],
-        output='screen'
+    gazebo = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(gazebo_share, 'launch', 'gazebo.launch.py')
+        ),
+        launch_arguments={
+            'world': world,
+            'verbose': 'true',
+        }.items(),
     )
 
-    rsp_node = Node(
+    robot_state_publisher = Node(
         package='robot_state_publisher',
         executable='robot_state_publisher',
         output='screen',
-        parameters=[robot_description] 
+        parameters=[
+            {'robot_description': robot_description_xml},
+            {'use_sim_time': ParameterValue(use_sim_time, value_type=bool)},
+        ],
     )
 
     spawn_entity = Node(
         package='gazebo_ros',
         executable='spawn_entity.py',
-        arguments=['-topic', 'robot_description', '-entity', 'diff_bot', '-x', '0.0', '-y', '0.0', '-z', '0.05'],
-        output='screen'
+        arguments=[
+            '-topic', 'robot_description',
+            '-entity', 'diff_bot',
+            '-x', '0.0',
+            '-y', '0.0',
+            '-z', '0.08',
+        ],
+        output='screen',
     )
 
-    rviz_config_file = os.path.join(pkg_share, 'rviz', 'diff_drive.rviz')
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
         name='rviz2',
         output='screen',
-        arguments=['-d', rviz_config_file]
+        arguments=['-d', os.path.join(pkg_share, 'rviz', 'diff_drive.rviz')],
+        parameters=[{'use_sim_time': ParameterValue(use_sim_time, value_type=bool)}],
+        condition=IfCondition(use_rviz),
     )
 
-    static_tf = Node(
-        package='tf2_ros',
-        executable='static_transform_publisher',
-        name='base_footprint_stf',
-        arguments=['0', '0', '0', '0', '0', '0', 'base_link', 'base_footprint'],
-        output='screen'
-    )
-
-    # ========================================================================
-    # 🌟 强行注入 SLAM：使用绝对路径读取 yaml，无视编译环境映射问题！
-    # ========================================================================
-    slam_yaml_path = os.path.expanduser('~/ros2_ws/src/diff_drive_pkg/config/slam_params.yaml')
-    
-    slam_toolbox_node = IncludeLaunchDescription(
+    slam_toolbox = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(get_package_share_directory('slam_toolbox'), 'launch', 'online_async_launch.py')
+            os.path.join(
+                get_package_share_directory('slam_toolbox'),
+                'launch',
+                'online_async_launch.py',
+            )
         ),
         launch_arguments={
-            'use_sim_time': 'true',
-            'slam_params_file': slam_yaml_path  # 强制灌入我们的定制参数
-        }.items()
+            'use_sim_time': use_sim_time,
+            'slam_params_file': os.path.join(pkg_share, 'config', 'slam_params.yaml'),
+        }.items(),
+        condition=IfCondition(use_slam),
     )
 
     return LaunchDescription([
-        global_sim_time, 
+        DeclareLaunchArgument('use_sim_time', default_value='true'),
+        DeclareLaunchArgument('rviz', default_value='true'),
+        DeclareLaunchArgument('slam', default_value='true'),
+        DeclareLaunchArgument(
+            'world',
+            default_value=os.path.join(pkg_share, 'worlds', 'indoor_obstacles.world'),
+        ),
         gazebo,
-        rsp_node,
+        robot_state_publisher,
         spawn_entity,
         rviz_node,
-        static_tf,
-        slam_toolbox_node  # 启动世界的同时直接拉起建图
+        slam_toolbox,
     ])

@@ -17,6 +17,7 @@ find_package(nav_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 
 # 2. 包含自定义头文件目录
 include_directories(include)
@@ -36,6 +37,7 @@ ament_target_dependencies(traj_tracking_node
   tf2
   tf2_ros
   sensor_msgs
+  std_msgs
 )
 
 # 5. 安装节点到系统路径

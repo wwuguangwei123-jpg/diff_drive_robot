@@ -5,3 +5,12 @@ log/
 *.pyc
 *.swp
 .DS_Store
+__pycache__/
+.pytest_cache/
+.vscode/
+.idea/
+.marscode/
+tmp/
+src/tmp/
+src/**/tmp/
+src/**/.marscode/

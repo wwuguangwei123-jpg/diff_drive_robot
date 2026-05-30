@@ -1,251 +1,283 @@
 #include "diff_drive_control_cpp/traj_tracking_node.hpp"
-#include <cmath>
+
 #include <algorithm>
+#include <cmath>
+#include <functional>
+#include <limits>
 
-TrajTrackingNode::TrajTrackingNode() 
-    : Node("traj_tracking_node"), 
-      current_state_(RobotState::GO_TO_GOAL),
-      // 初始化PID参数：Kp, Ki, Kd, Max_Output, Min_Output
-      linear_pid_(0.6, 0.01, 0.1, 0.5, -0.1),   // 纵向速度控制：最大前行0.5m/s，最大倒车-0.2m/s
-      angular_pid_(2.0, 0.02, 0.1, 1.5, -1.5)  // 横向角速度控制：最大旋转1.5rad/s
-{
-    odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
-        "/odom", 10, std::bind(&TrajTrackingNode::odom_callback, this, std::placeholders::_1));
-        
-    scan_sub_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
-        "/scan", 10, std::bind(&TrajTrackingNode::scan_callback, this, std::placeholders::_1));
+namespace {
+constexpr double kPi = 3.14159265358979323846;
 
-    cmd_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
-    
-    cte_pub_ = this->create_publisher<std_msgs::msg::Float64>("/cte", 10);
-    
-    timer_ = this->create_wall_timer(
-        std::chrono::milliseconds(50), std::bind(&TrajTrackingNode::control_loop, this));
+double normalize_angle(double angle) {
+    while (angle > kPi) {
+        angle -= 2.0 * kPi;
+    }
+    while (angle < -kPi) {
+        angle += 2.0 * kPi;
+    }
+    return angle;
+}
+}  // namespace
 
-    RCLCPP_INFO(this->get_logger(), "工业级解耦全栈控制节点已成功挂载！");
-    // 🌟 新增：订阅 Nav2 的全局路径话题
-    plan_sub_ = this->create_subscription<nav_msgs::msg::Path>(
-        "/plan", 10, std::bind(&TrajTrackingNode::plan_callback, this, std::placeholders::_1));
+TrajTrackingNode::TrajTrackingNode()
+    : Node("traj_tracking_node"),
+      linear_pid_(0.8, 0.0, 0.05, 0.6, -0.8),
+      angular_pid_(1.4, 0.0, 0.05, 1.2, -1.2) {
+    load_parameters();
 
-    cmd_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
-    // ... timer_ 的创建 ...
+    odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
+        odom_topic_, 10, std::bind(&TrajTrackingNode::odom_callback, this, std::placeholders::_1));
+    scan_sub_ = create_subscription<sensor_msgs::msg::LaserScan>(
+        scan_topic_, 10, std::bind(&TrajTrackingNode::scan_callback, this, std::placeholders::_1));
+    plan_sub_ = create_subscription<nav_msgs::msg::Path>(
+        plan_topic_, 10, std::bind(&TrajTrackingNode::plan_callback, this, std::placeholders::_1));
 
-    RCLCPP_INFO(this->get_logger(), "纯追踪控制节点就绪！等待接收 /plan 话题路径...");
+    cmd_pub_ = create_publisher<geometry_msgs::msg::Twist>(cmd_vel_topic_, 10);
+    cte_pub_ = create_publisher<std_msgs::msg::Float64>(cte_topic_, 10);
+
+    timer_ = create_wall_timer(
+        std::chrono::duration<double>(control_period_s_),
+        std::bind(&TrajTrackingNode::control_loop, this));
+
+    RCLCPP_INFO(
+        get_logger(),
+        "Trajectory tracker ready: plan=%s cmd_vel=%s cte=%s",
+        plan_topic_.c_str(),
+        cmd_vel_topic_.c_str(),
+        cte_topic_.c_str());
+}
+
+void TrajTrackingNode::load_parameters() {
+    odom_topic_ = declare_parameter<std::string>("odom_topic", odom_topic_);
+    scan_topic_ = declare_parameter<std::string>("scan_topic", scan_topic_);
+    plan_topic_ = declare_parameter<std::string>("plan_topic", plan_topic_);
+    cmd_vel_topic_ = declare_parameter<std::string>("cmd_vel_topic", cmd_vel_topic_);
+    cte_topic_ = declare_parameter<std::string>("cte_topic", cte_topic_);
+
+    lookahead_distance_ = declare_parameter<double>("lookahead_distance", lookahead_distance_);
+    target_speed_ = declare_parameter<double>("target_speed", target_speed_);
+    min_tracking_speed_ = declare_parameter<double>("min_tracking_speed", min_tracking_speed_);
+    max_tracking_speed_ = declare_parameter<double>("max_tracking_speed", max_tracking_speed_);
+    goal_tolerance_ = declare_parameter<double>("goal_tolerance", goal_tolerance_);
+    obstacle_stop_distance_ = declare_parameter<double>("obstacle_stop_distance", obstacle_stop_distance_);
+    obstacle_slow_distance_ = declare_parameter<double>("obstacle_slow_distance", obstacle_slow_distance_);
+    max_accel_ = declare_parameter<double>("max_accel", max_accel_);
+    max_decel_ = declare_parameter<double>("max_decel", max_decel_);
+    angular_pid_weight_ = declare_parameter<double>("angular_pid_weight", angular_pid_weight_);
+    control_period_s_ = declare_parameter<double>("control_period", control_period_s_);
+
+    linear_pid_.setGains(
+        declare_parameter<double>("linear_kp", 0.8),
+        declare_parameter<double>("linear_ki", 0.0),
+        declare_parameter<double>("linear_kd", 0.05));
+    angular_pid_.setGains(
+        declare_parameter<double>("angular_kp", 1.4),
+        declare_parameter<double>("angular_ki", 0.0),
+        declare_parameter<double>("angular_kd", 0.05));
+
+    lookahead_distance_ = std::max(0.1, lookahead_distance_);
+    control_period_s_ = std::max(0.01, control_period_s_);
+    max_tracking_speed_ = std::max(min_tracking_speed_, max_tracking_speed_);
 }
 
 void TrajTrackingNode::odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg) {
     current_x_ = msg->pose.pose.position.x;
     current_y_ = msg->pose.pose.position.y;
+    current_linear_speed_ = msg->twist.twist.linear.x;
 
-    double qx = msg->pose.pose.orientation.x;
-    double qy = msg->pose.pose.orientation.y;
-    double qz = msg->pose.pose.orientation.z;
-    double qw = msg->pose.pose.orientation.w;
-    current_yaw_ = std::atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz));
-    
+    const auto &q = msg->pose.pose.orientation;
+    current_yaw_ = std::atan2(
+        2.0 * (q.w * q.z + q.x * q.y),
+        1.0 - 2.0 * (q.y * q.y + q.z * q.z));
 }
 
 void TrajTrackingNode::scan_callback(const sensor_msgs::msg::LaserScan::SharedPtr msg) {
-// 🌟 核心逻辑 1：如果已经到了终点，直接无视雷达数据，原地躺平
     if (current_state_ == RobotState::REACHED_GOAL) {
-        return; 
+        return;
     }
-    min_dist_front_ = get_min_range(msg->ranges, 160, 200); 
-    min_dist_left_  = get_min_range(msg->ranges, 200, 240); 
-    min_dist_right_ = get_min_range(msg->ranges, 120, 160); 
 
-    if (min_dist_front_ < 0.8) {
+    min_dist_front_ = get_min_range(msg, -0.35, 0.35);
+    min_dist_left_ = get_min_range(msg, 0.35, 1.20);
+    min_dist_right_ = get_min_range(msg, -1.20, -0.35);
+
+    if (min_dist_front_ < obstacle_slow_distance_) {
         if (current_state_ != RobotState::AVOID_OBSTACLE) {
-            RCLCPP_WARN(this->get_logger(), "【安全警报】前方障碍物逼近 (%.2f米)！切入避障状态。", min_dist_front_);
+            RCLCPP_WARN(
+                get_logger(),
+                "Obstacle ahead at %.2f m, switching to avoidance.",
+                min_dist_front_);
             current_state_ = RobotState::AVOID_OBSTACLE;
-            linear_pid_.reset();  // 状态切换时及时重置积分项，避免控制过冲
+            linear_pid_.reset();
             angular_pid_.reset();
         }
-    } else {
-        if (current_state_ != RobotState::GO_TO_GOAL) {
-            RCLCPP_INFO(this->get_logger(), "【环境安全】障碍解除，恢复 PID 寻迹目标。");
-            current_state_ = RobotState::GO_TO_GOAL;
-        }
+    } else if (current_state_ == RobotState::AVOID_OBSTACLE) {
+        RCLCPP_INFO(get_logger(), "Front sector clear, resuming path tracking.");
+        current_state_ = RobotState::GO_TO_GOAL;
+        linear_pid_.reset();
+        angular_pid_.reset();
     }
 }
 
-double TrajTrackingNode::get_min_range(const std::vector<float>& ranges, int start_idx, int end_idx) {
-    double min_val = 100.0;
-    for (int i = start_idx; i <= end_idx; ++i) {
-        if (std::isnormal(ranges[i]) && ranges[i] < min_val) {
-            min_val = ranges[i];
+double TrajTrackingNode::get_min_range(
+    const sensor_msgs::msg::LaserScan::SharedPtr msg,
+    double min_angle,
+    double max_angle) const {
+    if (msg->ranges.empty() || msg->angle_increment == 0.0) {
+        return std::numeric_limits<double>::infinity();
+    }
+
+    double min_range = std::numeric_limits<double>::infinity();
+    for (size_t i = 0; i < msg->ranges.size(); ++i) {
+        const double angle = msg->angle_min + static_cast<double>(i) * msg->angle_increment;
+        const float range = msg->ranges[i];
+        if (angle >= min_angle && angle <= max_angle && std::isfinite(range)) {
+            if (range >= msg->range_min && range <= msg->range_max) {
+                min_range = std::min(min_range, static_cast<double>(range));
+            }
         }
     }
-    return min_val;
+    return min_range;
 }
 
 void TrajTrackingNode::control_loop() {
-    auto cmd_msg = geometry_msgs::msg::Twist();
-    double dt = 0.05; // 20Hz 对应的时间步长
-    // 🌟 核心逻辑 3：到达终点，彻底断电
+    geometry_msgs::msg::Twist cmd_msg;
+
     if (current_state_ == RobotState::REACHED_GOAL) {
-        cmd_msg.linear.x = 0.0;
-        cmd_msg.angular.z = 0.0;
-        last_linear_x_ = 0.0; // 停机时也要重置历史速度，防止下次起步突变
+        last_linear_x_ = 0.0;
         cmd_pub_->publish(cmd_msg);
         return;
     }
-	
+
     if (current_state_ == RobotState::AVOID_OBSTACLE) {
-        // 🌟 避障全面升级：老司机分级顺滑绕行策略
-        if (min_dist_front_ < 0.4) {
-            // 1. 极限危险区 (<0.4m)：贴脸了，必须挂倒挡强行拉开空间
-            cmd_msg.linear.x = -0.15; 
-            cmd_msg.angular.z = (min_dist_left_ > min_dist_right_) ? 1.5 : -1.5;
+        if (min_dist_front_ < obstacle_stop_distance_) {
+            cmd_msg.linear.x = -0.12;
+            cmd_msg.angular.z = (min_dist_left_ > min_dist_right_) ? 1.0 : -1.0;
         } else {
-            // 2. 顺滑绕行区 (0.4m ~ 1.2m)：边往前开边切弯，拒绝原地打转
-            cmd_msg.linear.x = 0.25; // 保持 0.25m/s 的速度往前滑行
-            
-            // 🌟 比例灵敏度魔法：距离越近，方向盘打得越狠
-            // 假设距离是 0.8，turn_speed = 1.0；距离逼近 0.4 时，turn_speed 飙升到 1.6
-            double turn_speed = 1.0 + (0.8 - min_dist_front_) * 1.5; 
-            
-            cmd_msg.angular.z = (min_dist_left_ > min_dist_right_) ? turn_speed : -turn_speed;
+            cmd_msg.linear.x = std::min(0.18, target_speed_);
+            const double turn_gain = std::clamp(
+                0.8 + (obstacle_slow_distance_ - min_dist_front_) * 1.2,
+                0.6,
+                1.4);
+            cmd_msg.angular.z = (min_dist_left_ > min_dist_right_) ? turn_gain : -turn_gain;
         }
-    }
-    else if (current_state_ == RobotState::GO_TO_GOAL) {
-    // 🌟 新增：空载保护
+    } else if (current_state_ == RobotState::GO_TO_GOAL) {
         if (global_path_.empty()) {
+            cmd_pub_->publish(cmd_msg);
             return;
         }
-        // ==========================================
-        // 🌟 新篇章：实时计算并发布横向跟踪误差 (CTE)
-        // ==========================================
-        double min_cte = 1000.0; // 初始设一个极大的距离
-        // 遍历整个全局路径，寻找离小车当前位置最近的那个点
-        for (const auto& point : global_path_) {
-            double dist = std::hypot(point.first - current_x_, point.second - current_y_);
-            if (dist < min_cte) {
-                min_cte = dist;
-            }
+
+        publish_cte();
+
+        const auto &goal = global_path_.back();
+        const double dist_to_goal = std::hypot(goal.first - current_x_, goal.second - current_y_);
+        if (dist_to_goal < goal_tolerance_) {
+            current_state_ = RobotState::REACHED_GOAL;
+            last_linear_x_ = 0.0;
+            linear_pid_.reset();
+            angular_pid_.reset();
+            RCLCPP_INFO(get_logger(), "Goal reached within %.2f m.", dist_to_goal);
+            cmd_pub_->publish(cmd_msg);
+            return;
         }
-        
-        // 发布 CTE 数据供 rqt_plot 画图使用
-        auto cte_msg = std_msgs::msg::Float64();
-        cte_msg.data = min_cte;
-        cte_pub_->publish(cte_msg);
+
         double target_x = 0.0;
         double target_y = 0.0;
-
-        // 1. 寻找前瞻点
         if (!find_lookahead_point(target_x, target_y)) {
-            // 🌟 修复直线 Bug：一旦找不到合法的前瞻点，说明真正进入终点盲区，果断刹车锁死
-            cmd_msg.linear.x = 0.0;
-            cmd_msg.angular.z = 0.0;
-            current_state_ = RobotState::REACHED_GOAL;
-            RCLCPP_INFO_ONCE(this->get_logger(), "🏁 S 型赛道追踪完成，完美冲线！");
-        } else {
-            // 2. 几何计算
-            double dx = target_x - current_x_;
-            double dy = target_y - current_y_;
-            double alpha = std::atan2(dy, dx) - current_yaw_;
-
-            while (alpha > M_PI) alpha -= 2.0 * M_PI;
-            while (alpha < -M_PI) alpha += 2.0 * M_PI;
-
-            double kappa = (2.0 * std::sin(alpha)) / lookahead_distance_;
-
-            // 3. 🌟🌟🌟 动态速度控制引擎 🌟🌟🌟
-            double max_v = 0.6; // 直道最大速度拉高到 0.6 m/s
-            double min_v = 0.15; // 弯道最低保障速度
-
-            // 策略 A：弯道自适应减速（根据曲率绝对值衰减线速度）
-            // 曲率越大，分母越大，速度越慢
-            double v_curve = max_v / (1.0 + 2.0 * std::abs(kappa)); 
-
-            // 策略 B：终点减速（计算小车到赛道最后一个终点的绝对距离）
-            double dist_to_endpoint = std::hypot(global_path_.back().first - current_x_, 
-                                                 global_path_.back().second - current_y_);
-            double v_stage = 1.0;
-            if (dist_to_endpoint < 1.5) {
-                v_stage = dist_to_endpoint / 1.5; // 进站 1.5 米内，速度随距离线性衰减
-            }
-
-            // 联合输出线速度：弯道速度 乘以 终点衰减系数，最后用 std::max 兜底
-            cmd_msg.linear.x = std::max(min_v, v_curve * v_stage);
-
-            // 如果已经极其靠近终点（比如 0.15米内），强制切入停机，防止冲过头
-            if (dist_to_endpoint < 0.15) {
-                cmd_msg.linear.x = 0.0;
-                cmd_msg.angular.z = 0.0;
-                current_state_ = RobotState::REACHED_GOAL;
-                RCLCPP_INFO(this->get_logger(), "🎉 距离终点 %.2f 米，自适应减速进站成功！", dist_to_endpoint);
-            } else {
-                // 4. 运动学输出：omega = v * kappa
-                cmd_msg.angular.z = cmd_msg.linear.x * kappa;
-                // 调试信息：你可以取消下面这行的注释来观察底层的计算过程
-            //RCLCPP_INFO(this->get_logger(), "跟踪点:(%.2f, %.2f), 夹角:%.2f, 输出角速度:%.2f", target_x, target_y, alpha, cmd_msg.angular.z);
-            }
+            target_x = goal.first;
+            target_y = goal.second;
         }
-    }
-    // --- 2. 🌟🌟🌟 新增核心：工业级加速度限幅 (Slew Rate Limiter) 🌟🌟🌟 ---
-    double max_accel = 0.5;              // 设定最大加速度：0.5 m/s^2 (防止起步打滑)
-    double max_decel = 0.8;              // 设定最大减速度(刹车)：0.8 m/s^2 (防止点头扫地)
-    
-    double max_delta_v_accel = max_accel * dt; // 0.05秒内允许的最大加速增量
-    double max_delta_v_decel = max_decel * dt; // 0.05秒内允许的最大刹车减量
 
-    // 对向前行驶的加速/减速进行限制
+        const double dx = target_x - current_x_;
+        const double dy = target_y - current_y_;
+        const double alpha = normalize_angle(std::atan2(dy, dx) - current_yaw_);
+        const double curvature = 2.0 * std::sin(alpha) / lookahead_distance_;
+
+        const double curve_speed = target_speed_ / (1.0 + 1.8 * std::abs(curvature));
+        const double goal_scale = std::clamp(dist_to_goal / 1.5, 0.25, 1.0);
+        const double desired_speed = std::clamp(
+            curve_speed * goal_scale,
+            min_tracking_speed_,
+            max_tracking_speed_);
+
+        const double accel_cmd = linear_pid_.calculate(desired_speed - current_linear_speed_, control_period_s_);
+        cmd_msg.linear.x = current_linear_speed_ + accel_cmd * control_period_s_;
+
+        const double pure_pursuit_omega = cmd_msg.linear.x * curvature;
+        const double heading_pid = angular_pid_.calculate(alpha, control_period_s_);
+        cmd_msg.angular.z = std::clamp(
+            pure_pursuit_omega + angular_pid_weight_ * heading_pid,
+            -1.5,
+            1.5);
+    }
+
+    const double max_delta_up = max_accel_ * control_period_s_;
+    const double max_delta_down = max_decel_ * control_period_s_;
     if (cmd_msg.linear.x > last_linear_x_) {
-        // 正在加速
-        if (cmd_msg.linear.x - last_linear_x_ > max_delta_v_accel) {
-            cmd_msg.linear.x = last_linear_x_ + max_delta_v_accel;
-        }
+        cmd_msg.linear.x = std::min(cmd_msg.linear.x, last_linear_x_ + max_delta_up);
     } else {
-        // 正在减速 (刹车)
-        if (last_linear_x_ - cmd_msg.linear.x > max_delta_v_decel) {
-            cmd_msg.linear.x = last_linear_x_ - max_delta_v_decel;
-        }
+        cmd_msg.linear.x = std::max(cmd_msg.linear.x, last_linear_x_ - max_delta_down);
+    }
+    last_linear_x_ = cmd_msg.linear.x;
+
+    cmd_pub_->publish(cmd_msg);
+}
+
+void TrajTrackingNode::publish_cte() {
+    double min_cte = std::numeric_limits<double>::infinity();
+    for (const auto &point : global_path_) {
+        min_cte = std::min(min_cte, std::hypot(point.first - current_x_, point.second - current_y_));
     }
 
-    // 更新历史速度记录，留给下一帧使用
-    last_linear_x_ = cmd_msg.linear.x;
-    // --------------------------------------------------
-    cmd_pub_->publish(cmd_msg);
+    if (std::isfinite(min_cte)) {
+        std_msgs::msg::Float64 msg;
+        msg.data = min_cte;
+        cte_pub_->publish(msg);
+    }
 }
 
-void TrajTrackingNode::stop_robot() {
-    auto cmd_msg = geometry_msgs::msg::Twist();
-    cmd_msg.linear.x = 0.0;
-    cmd_msg.angular.z = 0.0;
-    cmd_pub_->publish(cmd_msg);
-    RCLCPP_INFO(this->get_logger(), "🔴 节点安全卸载：紧急全零刹车指令已投递至 DDS 中间件。");
-}
-// 🌟 新增：遍历全局路径，寻找前瞻点
 bool TrajTrackingNode::find_lookahead_point(double &target_x, double &target_y) {
-    for (size_t i = current_path_index_; i < global_path_.size(); ++i) {
-        double dist = std::hypot(global_path_[i].first - current_x_, global_path_[i].second - current_y_);
-        
+    if (global_path_.empty()) {
+        return false;
+    }
+
+    const size_t start = std::min(current_path_index_, global_path_.size() - 1);
+    for (size_t i = start; i < global_path_.size(); ++i) {
+        const double dist = std::hypot(global_path_[i].first - current_x_, global_path_[i].second - current_y_);
         if (dist >= lookahead_distance_) {
             target_x = global_path_[i].first;
             target_y = global_path_[i].second;
-            current_path_index_ = i; // 记住这次看到哪了，下次不走回头路
+            current_path_index_ = i;
             return true;
         }
     }
-    return false; // 如果遍历完了都没找到大于 L_d 的点，说明快到终点了
+
+    return false;
 }
 
 void TrajTrackingNode::plan_callback(const nav_msgs::msg::Path::SharedPtr msg) {
-    // 如果收到的路径是空的，直接忽略
     if (msg->poses.empty()) {
-        RCLCPP_WARN(this->get_logger(), "收到了空路径！");
+        RCLCPP_WARN(get_logger(), "Received an empty path.");
         return;
     }
 
-    // 清空旧路径，把 Nav2 发来的新坐标点全部装进去
     global_path_.clear();
-    for (const auto& pose_stamped : msg->poses) {
-        global_path_.push_back({pose_stamped.pose.position.x, pose_stamped.pose.position.y});
+    global_path_.reserve(msg->poses.size());
+    for (const auto &pose_stamped : msg->poses) {
+        global_path_.push_back({
+            pose_stamped.pose.position.x,
+            pose_stamped.pose.position.y,
+        });
     }
 
-    // 重置追踪进度，并激活寻迹状态
-    current_path_index_ = 0; 
+    current_path_index_ = 0;
     current_state_ = RobotState::GO_TO_GOAL;
-    RCLCPP_INFO(this->get_logger(), "🗺️ 成功接收新全局路径！共 %zu 个轨迹点，起步追踪！", global_path_.size());
+    linear_pid_.reset();
+    angular_pid_.reset();
+    RCLCPP_INFO(get_logger(), "Received path with %zu poses.", global_path_.size());
+}
+
+void TrajTrackingNode::stop_robot() {
+    geometry_msgs::msg::Twist cmd_msg;
+    cmd_pub_->publish(cmd_msg);
+    RCLCPP_INFO(get_logger(), "Published zero velocity command.");
 }

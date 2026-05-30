@@ -22,8 +22,8 @@ options = {
   submap_publish_period_sec = 0.3,
   pose_publish_period_sec = 5e-3,
   trajectory_publish_period_sec = 30e-3,
-  
-  -- 🌟 ROS 2 Humble 强制要求的采样率参数 (缺一不可)
+
+  -- ROS 2 Cartographer requires all sampling ratios to be specified.
   rangefinder_sampling_ratio = 1.0,
   odometry_sampling_ratio = 1.0,
   fixed_frame_pose_sampling_ratio = 1.0,
@@ -34,7 +34,7 @@ options = {
 MAP_BUILDER.use_trajectory_builder_2d = true
 TRAJECTORY_BUILDER_2D.use_imu_data = false
 TRAJECTORY_BUILDER_2D.min_range = 0.15
-TRAJECTORY_BUILDER_2D.max_range = 10.0
-TRAJECTORY_BUILDER_2D.missing_data_ray_length = 10.0
+TRAJECTORY_BUILDER_2D.max_range = 8.0
+TRAJECTORY_BUILDER_2D.missing_data_ray_length = 8.0
 
 return options

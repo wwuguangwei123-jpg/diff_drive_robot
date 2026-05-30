@@ -3,9 +3,9 @@
 <package format="3">
   <name>diff_drive_control_cpp</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>Pure pursuit trajectory tracking and simple lidar obstacle avoidance for a ROS 2 differential-drive robot.</description>
   <maintainer email="wwuguangwei123@gmail.com">guangwei</maintainer>
-  <license>TODO: License declaration</license>
+  <license>MIT</license>
 
 
   <buildtool_depend>ament_cmake</buildtool_depend>
@@ -14,6 +14,8 @@
   <depend>std_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>sensor_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
   
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

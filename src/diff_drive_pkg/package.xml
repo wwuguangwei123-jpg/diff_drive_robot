@@ -3,9 +3,22 @@
 <package format="3">
   <name>diff_drive_pkg</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>Gazebo, SLAM, Nav2 and RViz bringup resources for a ROS 2 differential-drive robot.</description>
   <maintainer email="wwuguangwei123@gmail.com">guangwei</maintainer>
-  <license>TODO: License declaration</license>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>cartographer_ros</exec_depend>
+  <exec_depend>gazebo_ros</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>joint_state_publisher</exec_depend>
+  <exec_depend>nav2_bringup</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>slam_toolbox</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>xacro</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
