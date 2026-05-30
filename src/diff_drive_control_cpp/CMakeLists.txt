@@ -12,8 +12,10 @@ endif()
 # 1. 寻找 ROS 2 核心通信依赖
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(nav2_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
@@ -31,6 +33,21 @@ add_executable(traj_tracking_node
 )
 
 # 4. 链接 ROS 2 动态库
+add_executable(goal_to_plan_node
+  src/goal_to_plan_node.cpp
+)
+
+ament_target_dependencies(goal_to_plan_node
+  rclcpp
+  rclcpp_action
+  geometry_msgs
+  nav_msgs
+  nav2_msgs
+  tf2
+  tf2_ros
+  tf2_geometry_msgs
+)
+
 ament_target_dependencies(traj_tracking_node
   rclcpp
   geometry_msgs
@@ -45,6 +62,7 @@ ament_target_dependencies(traj_tracking_node
 # 5. 安装节点到系统路径
 install(TARGETS
   traj_tracking_node
+  goal_to_plan_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

@@ -106,16 +106,22 @@ Plot tracking error:
 ros2 run rqt_plot rqt_plot /cte/data
 ```
 
-## Nav2 with saved map
+## Nav2 planning with saved map
 
-The saved map uses a relative image path, so it works after installation and on different machines.
+The saved map uses a relative image path, so it works after installation and on different machines. The Nav2 launch starts map server, AMCL, planner server and a small `goal_to_plan_node`. RViz `/goal_pose` messages are converted into Nav2 `ComputePathToPose` action requests; the resulting `/plan` is consumed by the custom C++ tracker, which is the only node that publishes `/cmd_vel`.
 
 ```bash
 source ~/ros2_ws/install/setup.bash
 ros2 launch diff_drive_pkg nav2.launch.py
 ```
 
-If you run Nav2 and the custom tracker at the same time, make sure only one node is driving `/cmd_vel` unless you intentionally remap topics for comparison.
+For a full navigation test, run Gazebo/RViz, Nav2 planning and the tracker in separate terminals, then use RViz 2D Goal:
+
+```bash
+ros2 launch diff_drive_pkg diff_drive_launch.py slam:=false
+ros2 launch diff_drive_pkg nav2.launch.py
+ros2 launch diff_drive_pkg tracking.launch.py
+```
 
 ## Controller parameters
 
