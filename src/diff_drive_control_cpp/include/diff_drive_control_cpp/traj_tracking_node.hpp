@@ -12,6 +12,8 @@
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "std_msgs/msg/float64.hpp"
+#include "tf2_ros/buffer.h"
+#include "tf2_ros/transform_listener.h"
 
 enum class RobotState {
     GO_TO_GOAL,
@@ -47,10 +49,14 @@ private:
 
     std::vector<std::pair<double, double>> global_path_;
     size_t current_path_index_ = 0;
+    std::string path_frame_;
+    std::string odom_frame_ = "odom";
 
     RobotState current_state_ = RobotState::GO_TO_GOAL;
     PidController linear_pid_;
     PidController angular_pid_;
+    tf2_ros::Buffer tf_buffer_;
+    tf2_ros::TransformListener tf_listener_;
 
     double current_x_ = 0.0;
     double current_y_ = 0.0;

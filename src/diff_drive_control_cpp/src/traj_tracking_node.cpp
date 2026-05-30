@@ -5,6 +5,10 @@
 #include <functional>
 #include <limits>
 
+#include "geometry_msgs/msg/pose_stamped.hpp"
+#include "tf2/utils.h"
+#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
+
 namespace {
 constexpr double kPi = 3.14159265358979323846;
 
@@ -22,7 +26,9 @@ double normalize_angle(double angle) {
 TrajTrackingNode::TrajTrackingNode()
     : Node("traj_tracking_node"),
       linear_pid_(0.8, 0.0, 0.05, 0.6, -0.8),
-      angular_pid_(1.4, 0.0, 0.05, 1.2, -1.2) {
+      angular_pid_(1.4, 0.0, 0.05, 1.2, -1.2),
+      tf_buffer_(get_clock()),
+      tf_listener_(tf_buffer_) {
     load_parameters();
 
     odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
@@ -81,14 +87,35 @@ void TrajTrackingNode::load_parameters() {
 }
 
 void TrajTrackingNode::odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg) {
-    current_x_ = msg->pose.pose.position.x;
-    current_y_ = msg->pose.pose.position.y;
     current_linear_speed_ = msg->twist.twist.linear.x;
+    odom_frame_ = msg->header.frame_id.empty() ? "odom" : msg->header.frame_id;
 
-    const auto &q = msg->pose.pose.orientation;
-    current_yaw_ = std::atan2(
-        2.0 * (q.w * q.z + q.x * q.y),
-        1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+    geometry_msgs::msg::PoseStamped odom_pose;
+    odom_pose.header = msg->header;
+    odom_pose.pose = msg->pose.pose;
+
+    geometry_msgs::msg::PoseStamped pose_in_path_frame = odom_pose;
+    if (!path_frame_.empty() && path_frame_ != odom_frame_) {
+        try {
+            pose_in_path_frame = tf_buffer_.transform(
+                odom_pose,
+                path_frame_,
+                tf2::durationFromSec(0.05));
+        } catch (const tf2::TransformException &ex) {
+            RCLCPP_WARN_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                2000,
+                "Could not transform odom pose from %s to %s: %s",
+                odom_frame_.c_str(),
+                path_frame_.c_str(),
+                ex.what());
+        }
+    }
+
+    current_x_ = pose_in_path_frame.pose.position.x;
+    current_y_ = pose_in_path_frame.pose.position.y;
+    current_yaw_ = tf2::getYaw(pose_in_path_frame.pose.orientation);
 }
 
 void TrajTrackingNode::scan_callback(const sensor_msgs::msg::LaserScan::SharedPtr msg) {
@@ -262,6 +289,7 @@ void TrajTrackingNode::plan_callback(const nav_msgs::msg::Path::SharedPtr msg) {
 
     global_path_.clear();
     global_path_.reserve(msg->poses.size());
+    path_frame_ = msg->header.frame_id.empty() ? "map" : msg->header.frame_id;
     for (const auto &pose_stamped : msg->poses) {
         global_path_.push_back({
             pose_stamped.pose.position.x,
