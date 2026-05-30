@@ -3,7 +3,7 @@ import os
 import xacro
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -13,7 +13,6 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description():
     pkg_share = get_package_share_directory('diff_drive_pkg')
-    gazebo_share = get_package_share_directory('gazebo_ros')
 
     use_sim_time = LaunchConfiguration('use_sim_time')
     use_rviz = LaunchConfiguration('rviz')
@@ -23,14 +22,17 @@ def generate_launch_description():
     xacro_file = os.path.join(pkg_share, 'urdf', 'diff_drive_gazebo.urdf.xacro')
     robot_description_xml = xacro.process_file(xacro_file).toxml()
 
-    gazebo = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(gazebo_share, 'launch', 'gazebo.launch.py')
-        ),
-        launch_arguments={
-            'world': world,
-            'verbose': 'true',
-        }.items(),
+    gazebo = ExecuteProcess(
+        cmd=[
+            'gazebo',
+            '--verbose',
+            world,
+            '-s',
+            'libgazebo_ros_init.so',
+            '-s',
+            'libgazebo_ros_factory.so',
+        ],
+        output='screen',
     )
 
     robot_state_publisher = Node(
